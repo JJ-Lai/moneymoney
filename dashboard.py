@@ -10,9 +10,11 @@ import streamlit as st
 
 from config import TZ_NAME, cfg
 from db import store
-from digest.format import CATEGORY_LABEL, select_top_symbols
+from digest.format import CATEGORY_LABEL, select_top_sectors, select_top_symbols
 from ingest.mis import is_trading_session
 from ingest.us_yahoo import is_us_trading_session
+from sectors.aggregate import classify_universe, compute_sector_stats
+from sectors.taxonomy import HOT_SECTORS, SECTOR_LABEL, list_sectors
 from us.watchlist import US_WATCHLIST, us_name
 
 TZ = ZoneInfo(TZ_NAME)
@@ -32,6 +34,7 @@ TW_RULES = [
     ("PX_VOL_UP / DOWN", "價量同向"),
     ("BREAK_MA20/60", "均線突破"),
     ("法人／事件", "盤後為主"),
+    ("SECTOR_*", "題材族群綜合走向"),
 ]
 US_RULES = [
     ("US_MOVE_3", "ETF≥2%／個股≥3%"),
@@ -182,6 +185,50 @@ def _watch_grid_html(bars: list[dict], names: dict[str, str]) -> str:
     return _cards_html(items)
 
 
+def _sector_cards_html(sectors: list[dict]) -> str:
+    cards = []
+    for s in sectors:
+        tone = _tone(s.get("avg_change"))
+        color = _color(tone)
+        hot = "🔥 " if s.get("hot") else ""
+        avg = s.get("avg_change")
+        avg_txt = f"{avg:+.2f}%" if isinstance(avg, (int, float)) else "—"
+        breadth = s.get("breadth_up")
+        br_txt = f"{breadth * 100:.0f}%" if isinstance(breadth, (int, float)) else "—"
+        leader = s.get("leader_name") or s.get("leader_symbol") or ""
+        leader_ch = s.get("leader_change")
+        lc = f"{leader_ch:+.2f}%" if isinstance(leader_ch, (int, float)) else ""
+        cards.append(
+            f"""
+            <div class="card" style="border-color:{color}">
+              <div class="card-h">
+                <span class="nm">{hot}{escape(s.get('name') or '')}</span>
+                <span class="rk">{s.get('count', 0)} 檔 · 上漲占比 {escape(br_txt)}</span>
+              </div>
+              <div class="card-b">
+                <div class="price" style="color:{color};font-size:22px">
+                  均幅 {escape(avg_txt)}
+                </div>
+                <div class="foot">領漲 {escape(str(leader))} {escape(lc)}</div>
+              </div>
+            </div>
+            """
+        )
+    return f"""
+    <style>
+      * {{ box-sizing: border-box; font-family: "Noto Sans TC", "Microsoft JhengHei", sans-serif; }}
+      body {{ margin: 0; background: {BG}; }}
+      .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 2px; }}
+      .card {{ background: #fff; border: 1.5px solid {FLAT}; border-radius: 6px; overflow: hidden; }}
+      .card-h {{ background: {CARD_HDR}; padding: 8px; text-align: center; border-bottom: 1px solid #e0e0e0; }}
+      .card-h .nm {{ display: block; font-size: 14px; font-weight: 700; color: #222; }}
+      .card-h .rk {{ display: block; font-size: 11px; color: #888; margin-top: 2px; }}
+      .card-b {{ padding: 10px; }}
+      .foot {{ margin-top: 8px; font-size: 11px; color: {TEAL_DARK}; text-align: center; font-weight: 600; }}
+    </style>
+    <div class="grid">{"".join(cards)}</div>
+    """
+
 st.set_page_config(page_title="行情 · 台股／美股", page_icon="📊", layout="centered")
 st.markdown(SHELL_CSS, unsafe_allow_html=True)
 
@@ -276,6 +323,73 @@ def live_dashboard() -> None:
                 )
             rows = (len(items) + 1) // 2
             st.iframe(_cards_html(items), height=min(1200, max(320, rows * 168)))
+
+        sector_stats = compute_sector_stats()
+        hot_first = sorted(
+            sector_stats,
+            key=lambda s: (not s.get("hot"), -abs(s.get("avg_change") or 0)),
+        )[:12]
+        st.markdown('<div class="section-h">題材族群熱度</div>', unsafe_allow_html=True)
+        st.caption("依 2025–2026 熱門題材分類 · 記憶體／AI 伺服器／被動元件／面板等 · 紅漲綠跌")
+        if not hot_first:
+            st.info("尚無足夠行情計算族群指標。")
+        else:
+            srows = (len(hot_first) + 1) // 2
+            st.iframe(
+                _sector_cards_html(hot_first),
+                height=min(900, max(280, srows * 140)),
+            )
+
+        sector_ranked, sector_by, sector_scores = select_top_sectors(signals, top_n=8)
+        if sector_ranked:
+            st.markdown('<div class="section-h">族群警示</div>', unsafe_allow_html=True)
+            sec_items = []
+            for i, code in enumerate(sector_ranked, 1):
+                rules = sector_by[code]
+                payload = max(rules, key=lambda r: float(r.get("score") or 0)).get("payload") or {}
+                avg = payload.get("avg_change")
+                sec_items.append(
+                    {
+                        "symbol": code,
+                        "name": payload.get("sector_name") or SECTOR_LABEL.get(code, code),
+                        "rank": i,
+                        "score": sector_scores[code],
+                        "price": None,
+                        "change": avg,
+                        "prev": None,
+                        "cats": "族群",
+                        "note": payload.get("note") or "",
+                    }
+                )
+            srows = (len(sec_items) + 1) // 2
+            st.iframe(_cards_html(sec_items), height=min(600, max(240, srows * 168)))
+
+        with st.expander("標的分類（全部上市）", expanded=False):
+            sector_opts = ["全部"] + [label for _, label, _ in list_sectors()]
+            pick = st.selectbox("題材族群", sector_opts, key="tw_sector_filter")
+            universe_rows = classify_universe()
+            if pick != "全部":
+                universe_rows = [r for r in universe_rows if r["sector_name"] == pick]
+            st.caption(f"共 {len(universe_rows)} 檔 · 熱門題材標 🔥")
+            bar_map = {b["symbol"]: b for b in store.latest_bars_1m()}
+            table = []
+            for r in universe_rows[:500]:
+                b = bar_map.get(r["symbol"], {})
+                ch = b.get("change_pct")
+                ch_s = f"{ch:+.2f}%" if isinstance(ch, (int, float)) else "—"
+                hot = "🔥" if r["sector_code"] in HOT_SECTORS else ""
+                table.append(
+                    {
+                        "代號": r["symbol"],
+                        "名稱": r["name"],
+                        "題材": f"{hot}{r['sector_name']}",
+                        "產業別": r["industry_name"],
+                        "漲跌幅": ch_s,
+                    }
+                )
+            st.dataframe(table, use_container_width=True, hide_index=True, height=360)
+            if len(universe_rows) > 500:
+                st.caption(f"僅顯示前 500 檔，此族群共 {len(universe_rows)} 檔。")
 
         with st.expander("台股規則", expanded=False):
             for a, b in TW_RULES:

@@ -13,6 +13,7 @@ CATEGORY_LABEL = {
     "technical": "技術",
     "institutional": "法人",
     "events": "事件",
+    "sector": "族群",
     "us_price": "美股",
 }
 
@@ -41,6 +42,10 @@ RULE_ZH = {
     "US_MOVE_3": "明顯波動",
     "US_MOVE_5": "大幅波動",
     "US_TW_LINK": "與台股連動標的波動",
+    "SECTOR_UP": "族群上漲",
+    "SECTOR_DOWN": "族群下跌",
+    "SECTOR_BREADTH_UP": "族群多頭擴散",
+    "SECTOR_BREADTH_DOWN": "族群空頭擴散",
 }
 
 
@@ -116,6 +121,16 @@ def humanize_signal(sig: dict[str, Any]) -> str:
             return note
         return RULE_ZH.get(rule, note or rule)
 
+    if rule.startswith("SECTOR_"):
+        if note:
+            return note
+        sector = payload.get("sector_name") or sig.get("symbol") or ""
+        avg = payload.get("avg_change")
+        if isinstance(avg, (int, float)):
+            direction = "上漲" if avg > 0 else "下跌"
+            return f"{sector}族群平均{direction} {abs(avg):.2f}%"
+        return RULE_ZH.get(rule, sector or rule)
+
     # strip duplicated "RULE: RULE:" prefixes
     cleaned = note
     for prefix in (f"{rule}:", "DISPOSAL:", "WATCH_LIST:", "MATERIAL_NEWS:"):
@@ -152,6 +167,8 @@ def select_top_symbols(
 
     for s in signals:
         sym = s["symbol"]
+        if s.get("category") == "sector":
+            continue
         if not is_mail_worthy_symbol(sym):
             continue
         # Pure disposal/watch on non-mover: slight demote so price action ranks first
@@ -170,6 +187,45 @@ def select_top_symbols(
     return ranked, by_symbol, scores
 
 
+def select_top_sectors(
+    signals: list[dict[str, Any]],
+    top_n: int = 6,
+) -> tuple[list[str], dict[str, list[dict[str, Any]]], dict[str, float]]:
+    """Rank sector trend signals separately from individual stocks."""
+    by_sector: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    scores: dict[str, float] = defaultdict(float)
+    for s in signals:
+        if s.get("category") != "sector":
+            continue
+        code = s["symbol"]
+        score = float(s.get("score") or 0)
+        payload = s.get("payload") or {}
+        if payload.get("hot"):
+            score += 8
+        by_sector[code].append(s)
+        scores[code] = max(scores[code], score)
+    ranked = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:top_n]
+    return ranked, by_sector, scores
+
+
+def build_sector_section_lines(
+    signals: list[dict[str, Any]],
+    top_n: int = 6,
+) -> list[str]:
+    ranked, by_sector, _ = select_top_sectors(signals, top_n=top_n)
+    if not ranked:
+        return []
+    from sectors.taxonomy import SECTOR_LABEL
+
+    lines: list[str] = []
+    for code in ranked:
+        rules = by_sector[code]
+        label = SECTOR_LABEL.get(code, code)
+        what = summarize_stock(rules)
+        lines.append(f"{label}：{what}")
+    return lines
+
+
 def build_digest_bodies(
     title: str,
     window_label: str,
@@ -184,6 +240,13 @@ def build_digest_bodies(
         for s in by_symbol[sym]:
             if s.get("id") is not None:
                 included_ids.append(int(s["id"]))
+    sector_lines = build_sector_section_lines(signals)
+    for s in signals:
+        if s.get("category") != "sector" or s.get("id") is None:
+            continue
+        sid = int(s["id"])
+        if sid not in included_ids:
+            included_ids.append(sid)
 
     subject = f"[台股監控] {title}｜{len(ranked)} 檔重點"
 
@@ -213,6 +276,11 @@ def build_digest_bodies(
             lines.append(f"【{sec_title}】")
             lines.extend(sec_lines)
 
+    if sector_lines:
+        lines.append("")
+        lines.append("【題材族群】")
+        lines.extend(sector_lines)
+
     lines.append("")
     lines.append(DISCLAIMER)
     text = "\n".join(lines)
@@ -224,6 +292,8 @@ def build_digest_bodies(
     <ol style="padding-left:1.2rem">
       {''.join(html_items) if ranked else '<p>本時段沒有需要特別注意的股票。</p>'}
     </ol>
+    {''.join(f"<p><b>【{t}】</b></p><ul>{''.join(f'<li>{l}</li>' for l in ls)}</ul>" for t, ls in (extra_sections or []))}
+    {f"<p><b>【題材族群】</b></p><ul>{''.join(f'<li>{l}</li>' for l in sector_lines)}</ul>" if sector_lines else ""}
     <p style="color:#888;font-size:12px">{DISCLAIMER}</p>
     </body></html>
     """

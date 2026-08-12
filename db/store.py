@@ -81,6 +81,12 @@ def get_symbol_names() -> dict[str, str]:
     return {r["symbol"]: r["name"] for r in rows}
 
 
+def get_symbol_industries() -> dict[str, str]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT symbol, industry FROM universe").fetchall()
+    return {r["symbol"]: r["industry"] for r in rows if r["industry"]}
+
+
 def insert_bars_1m(rows: list[dict[str, Any]]) -> int:
     if not rows:
         return 0
