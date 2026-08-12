@@ -8,8 +8,9 @@ from zoneinfo import ZoneInfo
 
 from config import TZ_NAME, cfg
 from db import store
-from digest.format import select_top_symbols, summarize_stock
+from digest.format import build_sector_section_lines, select_top_symbols, summarize_stock
 from mailer.smtp import send_mail
+from us.sectors import US_SECTOR_LABEL
 from us.watchlist import us_name
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,19 @@ def _format_bodies(
             if s.get("id") is not None:
                 ids.append(int(s["id"]))
 
+    sector_lines = build_sector_section_lines(
+        signals,
+        top_n=5,
+        category="us_sector",
+        label_map=US_SECTOR_LABEL,
+    )
+    for s in signals:
+        if s.get("category") != "us_sector" or s.get("id") is None:
+            continue
+        sid = int(s["id"])
+        if sid not in ids:
+            ids.append(sid)
+
     subject = f"[美股監控] {title}｜{len(ranked)} 檔重點"
     lines = [
         "以下是本時段重點（每檔一句話）：",
@@ -56,6 +70,11 @@ def _format_bodies(
                 f"<li style='margin:8px 0'><b>{sym} {name}</b>：{what}</li>"
             )
 
+    if sector_lines:
+        lines.append("")
+        lines.append("【題材族群】")
+        lines.extend(sector_lines)
+
     lines.extend(["", DISCLAIMER])
     text = "\n".join(lines)
     html = f"""
@@ -65,6 +84,7 @@ def _format_bodies(
     <ol style="padding-left:1.2rem">
       {''.join(html_items) if ranked else ''}
     </ol>
+    {f"<p><b>【題材族群】</b></p><ul>{''.join(f'<li>{l}</li>' for l in sector_lines)}</ul>" if sector_lines else ""}
     <p style="color:#888;font-size:12px">{DISCLAIMER}</p>
     </body></html>
     """

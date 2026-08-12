@@ -14,6 +14,7 @@ CATEGORY_LABEL = {
     "institutional": "法人",
     "events": "事件",
     "sector": "族群",
+    "us_sector": "美股族群",
     "us_price": "美股",
 }
 
@@ -167,7 +168,7 @@ def select_top_symbols(
 
     for s in signals:
         sym = s["symbol"]
-        if s.get("category") == "sector":
+        if s.get("category") in ("sector", "us_sector"):
             continue
         if not is_mail_worthy_symbol(sym):
             continue
@@ -190,12 +191,13 @@ def select_top_symbols(
 def select_top_sectors(
     signals: list[dict[str, Any]],
     top_n: int = 6,
+    category: str = "sector",
 ) -> tuple[list[str], dict[str, list[dict[str, Any]]], dict[str, float]]:
     """Rank sector trend signals separately from individual stocks."""
     by_sector: dict[str, list[dict[str, Any]]] = defaultdict(list)
     scores: dict[str, float] = defaultdict(float)
     for s in signals:
-        if s.get("category") != "sector":
+        if s.get("category") != category:
             continue
         code = s["symbol"]
         score = float(s.get("score") or 0)
@@ -211,16 +213,20 @@ def select_top_sectors(
 def build_sector_section_lines(
     signals: list[dict[str, Any]],
     top_n: int = 6,
+    category: str = "sector",
+    label_map: dict[str, str] | None = None,
 ) -> list[str]:
-    ranked, by_sector, _ = select_top_sectors(signals, top_n=top_n)
+    ranked, by_sector, _ = select_top_sectors(signals, top_n=top_n, category=category)
     if not ranked:
         return []
-    from sectors.taxonomy import SECTOR_LABEL
+    if label_map is None:
+        from sectors.taxonomy import SECTOR_LABEL
+        label_map = SECTOR_LABEL
 
     lines: list[str] = []
     for code in ranked:
         rules = by_sector[code]
-        label = SECTOR_LABEL.get(code, code)
+        label = label_map.get(code, code)
         what = summarize_stock(rules)
         lines.append(f"{label}：{what}")
     return lines
@@ -242,7 +248,7 @@ def build_digest_bodies(
                 included_ids.append(int(s["id"]))
     sector_lines = build_sector_section_lines(signals)
     for s in signals:
-        if s.get("category") != "sector" or s.get("id") is None:
+        if s.get("category") not in ("sector",) or s.get("id") is None:
             continue
         sid = int(s["id"])
         if sid not in included_ids:

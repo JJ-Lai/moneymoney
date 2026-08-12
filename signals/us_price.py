@@ -75,6 +75,10 @@ def evaluate_us_signals(now: datetime | None = None) -> list[dict[str, Any]]:
     return signals
 
 
+from signals.us_sector import evaluate_us_sector_trends
+
+
 def run_us_signals(now: datetime | None = None) -> int:
     sigs = evaluate_us_signals(now)
+    sigs.extend(evaluate_us_sector_trends(now))
     return store.insert_us_signals(sigs)

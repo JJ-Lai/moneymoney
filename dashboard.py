@@ -15,6 +15,7 @@ from ingest.mis import is_trading_session
 from ingest.us_yahoo import is_us_trading_session
 from sectors.aggregate import classify_universe, compute_sector_stats
 from sectors.taxonomy import HOT_SECTORS, SECTOR_LABEL, list_sectors
+from us.sectors import US_SECTOR_LABEL, US_HOT_SECTORS, classify_us_universe, compute_us_sector_stats
 from us.watchlist import US_WATCHLIST, us_name
 
 TZ = ZoneInfo(TZ_NAME)
@@ -40,6 +41,7 @@ US_RULES = [
     ("US_MOVE_3", "ETF≥2%／個股≥3%"),
     ("US_MOVE_5", "ETF≥3.5%／個股≥5%"),
     ("US_TW_LINK", "TSM/SOXX/SMH/NVDA ≥2%"),
+    ("SECTOR_*", "美股題材族群綜合走向"),
 ]
 
 SHELL_CSS = f"""
@@ -163,12 +165,22 @@ def _cards_html(items: list[dict]) -> str:
     """
 
 
-def _watch_grid_html(bars: list[dict], names: dict[str, str]) -> str:
+def _watch_grid_html(
+    bars: list[dict],
+    names: dict[str, str],
+    sector_labels: dict[str, str] | None = None,
+) -> str:
     """All watchlist quotes as Cathay cards (no score required)."""
     items = []
     ordered = sorted(bars, key=lambda b: abs(b.get("change_pct") or 0), reverse=True)
     for i, b in enumerate(ordered, 1):
         sym = b["symbol"]
+        if sector_labels and sym in sector_labels:
+            cats = sector_labels[sym]
+        elif sym in US_WATCHLIST:
+            cats = "美股連動"
+        else:
+            cats = ""
         items.append(
             {
                 "symbol": sym,
@@ -178,7 +190,7 @@ def _watch_grid_html(bars: list[dict], names: dict[str, str]) -> str:
                 "price": b.get("price"),
                 "change": b.get("change_pct"),
                 "prev": b.get("prev_close"),
-                "cats": "美股連動" if sym in US_WATCHLIST else "",
+                "cats": cats,
                 "note": "",
             }
         )
@@ -432,11 +444,48 @@ def live_dashboard() -> None:
     if not bars:
         st.info("尚無美股報價。可執行 `python main.py --us-once`，或等美股盤中由 run.bat 自動抓。")
     else:
+        us_sector_map = {r["symbol"]: r["sector_name"] for r in classify_us_universe()}
         rows = (len(bars) + 1) // 2
         st.iframe(
-            _watch_grid_html(bars, names),
+            _watch_grid_html(bars, names, sector_labels=us_sector_map),
             height=min(1400, max(320, rows * 168)),
         )
+
+    us_sector_stats = compute_us_sector_stats()
+    if us_sector_stats:
+        st.markdown('<div class="section-h">題材族群熱度</div>', unsafe_allow_html=True)
+        st.caption("半導體 ETF／AI 龍頭／設備／記憶體等 · 紅漲綠跌")
+        srows = (len(us_sector_stats) + 1) // 2
+        st.iframe(
+            _sector_cards_html(us_sector_stats),
+            height=min(600, max(240, srows * 140)),
+        )
+
+    sector_ranked, sector_by, sector_scores = select_top_sectors(
+        signals, top_n=5, category="us_sector"
+    )
+    if sector_ranked:
+        st.markdown('<div class="section-h">族群警示</div>', unsafe_allow_html=True)
+        sec_items = []
+        for i, code in enumerate(sector_ranked, 1):
+            rules = sector_by[code]
+            payload = max(rules, key=lambda r: float(r.get("score") or 0)).get("payload") or {}
+            avg = payload.get("avg_change")
+            sec_items.append(
+                {
+                    "symbol": code,
+                    "name": payload.get("sector_name") or US_SECTOR_LABEL.get(code, code),
+                    "rank": i,
+                    "score": sector_scores[code],
+                    "price": None,
+                    "change": avg,
+                    "prev": None,
+                    "cats": "族群",
+                    "note": payload.get("note") or "",
+                }
+            )
+        srows = (len(sec_items) + 1) // 2
+        st.iframe(_cards_html(sec_items), height=min(500, max(240, srows * 168)))
 
     st.markdown('<div class="section-h">訊號關注字卡</div>', unsafe_allow_html=True)
     if not ranked:
@@ -463,6 +512,25 @@ def live_dashboard() -> None:
             )
         rows = (len(items) + 1) // 2
         st.iframe(_cards_html(items), height=min(800, max(280, rows * 168)))
+
+    with st.expander("標的分類（全部 14 檔）", expanded=False):
+        us_rows = classify_us_universe()
+        bar_map = {b["symbol"]: b for b in bars}
+        table = []
+        for r in us_rows:
+            b = bar_map.get(r["symbol"], {})
+            ch = b.get("change_pct")
+            ch_s = f"{ch:+.2f}%" if isinstance(ch, (int, float)) else "—"
+            hot = "🔥" if r["sector_code"] in US_HOT_SECTORS else ""
+            table.append(
+                {
+                    "代號": r["symbol"],
+                    "名稱": r["name"],
+                    "題材": f"{hot}{r['sector_name']}",
+                    "漲跌幅": ch_s,
+                }
+            )
+        st.dataframe(table, use_container_width=True, hide_index=True)
 
     with st.expander("美股規則", expanded=False):
         for a, b in US_RULES:
