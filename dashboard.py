@@ -7,7 +7,6 @@ from html import escape
 from zoneinfo import ZoneInfo
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 from config import TZ_NAME, cfg
 from db import store
@@ -276,7 +275,7 @@ def live_dashboard() -> None:
                     }
                 )
             rows = (len(items) + 1) // 2
-            components.html(_cards_html(items), height=min(1200, max(320, rows * 168)), scrolling=True)
+            st.iframe(_cards_html(items), height=min(1200, max(320, rows * 168)))
 
         with st.expander("台股規則", expanded=False):
             for a, b in TW_RULES:
@@ -320,10 +319,9 @@ def live_dashboard() -> None:
         st.info("尚無美股報價。可執行 `python main.py --us-once`，或等美股盤中由 run.bat 自動抓。")
     else:
         rows = (len(bars) + 1) // 2
-        components.html(
+        st.iframe(
             _watch_grid_html(bars, names),
             height=min(1400, max(320, rows * 168)),
-            scrolling=True,
         )
 
     st.markdown('<div class="section-h">訊號關注字卡</div>', unsafe_allow_html=True)
@@ -350,7 +348,7 @@ def live_dashboard() -> None:
                 }
             )
         rows = (len(items) + 1) // 2
-        components.html(_cards_html(items), height=min(800, max(280, rows * 168)), scrolling=True)
+        st.iframe(_cards_html(items), height=min(800, max(280, rows * 168)))
 
     with st.expander("美股規則", expanded=False):
         for a, b in US_RULES:
